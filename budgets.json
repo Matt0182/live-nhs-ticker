@@ -1,0 +1,11 @@
+{
+  "source": "NHS England financial directions published by DHSC on GOV.UK",
+  "lastUpdated": "2026-03-25",
+  "budgets": {
+    "2026": {
+      "financialYear": "2026/27",
+      "amount": 215352000000,
+      "sourceUrl": "https://www.gov.uk/government/publications/2026-to-2027-financial-directions-to-nhs-england/2026-to-2027-financial-directions-to-nhs-england"
+    }
+  }
+}
