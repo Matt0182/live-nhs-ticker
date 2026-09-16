@@ -5,7 +5,9 @@
     "2026": {
       "financialYear": "2026/27",
       "amount": 215352000000,
-      "sourceUrl": "https://www.gov.uk/government/publications/2026-to-2027-financial-directions-to-nhs-england/2026-to-2027-financial-directions-to-nhs-england"
+      "sourceUrl": "https://www.gov.uk/government/publications/2026-to-2027-financial-directions-to-nhs-england/2026-to-2027-financial-directions-to-nhs-england",
+      "published": "2026-03-25",
+      "snapshotDate": "2026-01-01"
     }
   }
 }
