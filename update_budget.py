@@ -1,7 +1,7 @@
-```python
 import json
 import re
-from datetime import date
+from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 
 import requests
@@ -40,29 +40,37 @@ def get_text(html):
 
 
 def find_budget_amount(text):
+    text = re.sub(r"\s+", " ", text.replace("\xa0", " "))
+
     patterns = [
-        r"total revenue resource use limit.*?"
-        r"which is\s*£\s*([\d,]+)\s*million",
-
-        r"total revenue resource use limit.*?"
-        r"does not exceed\s*£\s*([\d,]+)\s*million",
-
-        r"total revenue resource use.*?"
-        r"£\s*([\d,]+)\s*million",
+        re.compile(
+            r"total\s+revenue\s+resource\s+use"
+            r".*?"
+            r"(?:does\s+not\s+exceed|"
+            r"limit(?:\s+is|\s+of)?|"
+            r"amount(?:\s+is|\s+of)?|"
+            r"of)"
+            r"\s*£\s*([\d,.]+)\s*(million|billion)",
+            re.IGNORECASE | re.DOTALL
+        ),
+        re.compile(
+            r"revenue\s+resource\s+use.{0,250}?"
+            r"£\s*([\d,.]+)\s*(million|billion)",
+            re.IGNORECASE | re.DOTALL
+        ),
     ]
 
     for pattern in patterns:
-        match = re.search(
-            pattern,
-            text,
-            re.IGNORECASE | re.DOTALL
-        )
+        match = pattern.search(text)
 
         if match:
-            millions = int(
-                match.group(1).replace(",", "")
+            value = Decimal(match.group(1).replace(",", ""))
+            multiplier = (
+                1_000_000
+                if match.group(2).lower() == "million"
+                else 1_000_000_000
             )
-            return millions * 1_000_000
+            return int(value * multiplier)
 
     return None
 
@@ -75,8 +83,6 @@ def find_published_date(text):
     )
 
     if match:
-        from datetime import datetime
-
         return datetime.strptime(
             match.group(1),
             "%d %B %Y"
@@ -176,10 +182,11 @@ def find_latest_budget():
         reverse=True
     )
 
+    checked_urls = []
+
     for years, title, url in usable:
         html = get_page(url)
         text = get_text(html)
-
         amount = find_budget_amount(text)
 
         if amount is not None:
@@ -197,9 +204,12 @@ def find_latest_budget():
                 )
             }
 
+        checked_urls.append(url)
+
     raise RuntimeError(
-        "Budget amount not found on any suitable "
-        "GOV.UK NHS England financial direction page."
+        "Budget amount not found on any suitable GOV.UK NHS England "
+        "financial direction page. Checked: "
+        + ", ".join(checked_urls)
     )
 
 
@@ -256,4 +266,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-```
