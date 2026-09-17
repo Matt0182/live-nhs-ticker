@@ -1,8 +1,8 @@
+```python
 import json
 import re
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
-from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
@@ -10,44 +10,44 @@ from bs4 import BeautifulSoup
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "budgets.json"
 
-COLLECTION = (
+HEADERS = {
+    "User-Agent": "Live-NHS-Ticker/1.0"
+}
+
+# Official GOV.UK collection
+COLLECTION_URL = (
     "https://www.gov.uk/government/collections/"
     "financial-directions-to-nhs-england"
 )
 
-HEADERS = {
-    "User-Agent": "NHS-Ticker-Budget-Updater/1.0"
-}
 
-
-def get(url):
-    response = requests.get(url, headers=HEADERS, timeout=30)
+def get_page(url):
+    response = requests.get(
+        url,
+        headers=HEADERS,
+        timeout=30
+    )
     response.raise_for_status()
     return response.text
 
 
-def parse_years(title):
-    match = re.search(
-        r"(20\d{2})\s+to\s+(20\d{2})",
-        title,
-        re.IGNORECASE
+def get_text(html):
+    soup = BeautifulSoup(
+        html,
+        "html.parser"
     )
-
-    if not match:
-        return None
-
-    return int(match.group(1)), int(match.group(2))
+    return soup.get_text(" ", strip=True)
 
 
-def parse_amount(text):
+def find_budget_amount(text):
     patterns = [
         r"total revenue resource use limit.*?"
-        r"which is\s+£\s*([\d,]+)\s*million",
-
-        r"total revenue resource use.*?"
-        r"does not exceed\s+£\s*([\d,]+)\s*million",
+        r"which is\s*£\s*([\d,]+)\s*million",
 
         r"total revenue resource use limit.*?"
+        r"does not exceed\s*£\s*([\d,]+)\s*million",
+
+        r"total revenue resource use.*?"
         r"£\s*([\d,]+)\s*million",
     ]
 
@@ -55,199 +55,205 @@ def parse_amount(text):
         match = re.search(
             pattern,
             text,
-            flags=re.IGNORECASE | re.DOTALL
+            re.IGNORECASE | re.DOTALL
         )
 
         if match:
-            return (
-                int(match.group(1).replace(",", ""))
-                * 1_000_000
+            millions = int(
+                match.group(1).replace(",", "")
             )
+            return millions * 1_000_000
 
-    raise RuntimeError(
-        "Could not find the total revenue resource use limit "
-        "on this GOV.UK page."
-    )
+    return None
 
 
-def publication_date(html):
-    soup = BeautifulSoup(html, "html.parser")
-
-    meta = soup.find(
-        "meta",
-        attrs={"property": "article:published_time"}
-    )
-
-    if meta and meta.get("content"):
-        return meta["content"][:10]
-
-    text = soup.get_text(" ", strip=True)
-
+def find_published_date(text):
     match = re.search(
         r"Published\s+(\d{1,2}\s+\w+\s+20\d{2})",
-        text
+        text,
+        re.IGNORECASE
     )
 
     if match:
+        from datetime import datetime
+
         return datetime.strptime(
             match.group(1),
             "%d %B %Y"
         ).date().isoformat()
 
-    return "1900-01-01"
+    return str(date.today())
 
 
-def find_pages():
-    soup = BeautifulSoup(get(COLLECTION), "html.parser")
+def find_year(title):
+    match = re.search(
+        r"(20\d{2})\s+to\s+(20\d{2})",
+        title,
+        re.IGNORECASE
+    )
 
-    pages = {}
+    if match:
+        return (
+            int(match.group(1)),
+            int(match.group(2))
+        )
 
-    for link in soup.find_all("a", href=True):
-        title = link.get_text(" ", strip=True)
-        years = parse_years(title)
+    return None
+
+
+def find_latest_budget():
+    collection_html = get_page(
+        COLLECTION_URL
+    )
+
+    soup = BeautifulSoup(
+        collection_html,
+        "html.parser"
+    )
+
+    candidates = []
+
+    for link in soup.find_all(
+        "a",
+        href=True
+    ):
+        title = link.get_text(
+            " ",
+            strip=True
+        )
+
+        years = find_year(title)
+
+        if not years:
+            continue
 
         if (
-            years
-            and "financial directions to nhs england"
-            in title.lower()
+            "financial directions to nhs england"
+            not in title.lower()
         ):
-            url = urljoin(
-                "https://www.gov.uk",
-                link["href"]
+            continue
+
+        url = link["href"]
+
+        if url.startswith("/"):
+            url = (
+                "https://www.gov.uk"
+                + url
             )
 
-            pages[url] = {
-                "title": title,
-                "url": url,
-                "years": years
-            }
-
-    return list(pages.values())
-
-
-def main():
-    candidates = find_pages()
+        candidates.append(
+            (
+                years,
+                title,
+                url
+            )
+        )
 
     if not candidates:
         raise RuntimeError(
-            "No NHS England financial-direction pages found."
+            "No NHS England financial direction pages "
+            "were found on GOV.UK."
         )
 
-    by_start = {}
+    current_year = date.today().year
 
-    for item in candidates:
-        html = get(item["url"])
+    # Prefer the most recent financial year that
+    # has already started or is the current calendar year.
+    usable = [
+        item
+        for item in candidates
+        if item[0][0] <= current_year
+    ]
 
-        item["published"] = publication_date(html)
+    if not usable:
+        raise RuntimeError(
+            "No suitable NHS England budget page found."
+        )
 
-        text = BeautifulSoup(
-            html,
-            "html.parser"
-        ).get_text(" ", strip=True)
+    # Most recent financial year first.
+    usable.sort(
+        key=lambda item: item[0][0],
+        reverse=True
+    )
 
-        item["amount"] = parse_amount(text)
+    for years, title, url in usable:
+        html = get_page(url)
+        text = get_text(html)
 
-        start, end = item["years"]
+        amount = find_budget_amount(text)
 
-        existing = by_start.get(start)
+        if amount is not None:
+            published = find_published_date(text)
 
-        if (
-            existing is None
-            or item["published"] > existing["published"]
-        ):
-            by_start[start] = item
+            return {
+                "financialYear": (
+                    f"{years[0]}/{str(years[1])[-2:]}"
+                ),
+                "amount": amount,
+                "sourceUrl": url,
+                "published": published,
+                "snapshotDate": (
+                    f"{current_year}-01-01"
+                )
+            }
 
+    raise RuntimeError(
+        "Budget amount not found on any suitable "
+        "GOV.UK NHS England financial direction page."
+    )
+
+
+def main():
     today = date.today()
     current_year = today.year
 
     data = json.loads(
-        DATA.read_text(encoding="utf-8")
+        DATA.read_text(
+            encoding="utf-8"
+        )
     )
 
-    data.setdefault("budgets", {})
+    data.setdefault(
+        "budgets",
+        {}
+    )
 
-    # Each calendar year gets a stable 1 January snapshot.
-    if str(current_year) not in data["budgets"]:
+    year_key = str(current_year)
 
-        usable = [
-            item
-            for item in by_start.values()
-            if item["years"][0] <= current_year
-        ]
+    # Do not overwrite an existing year's snapshot.
+    # This keeps the rate fixed from 1 January.
+    if year_key not in data["budgets"]:
+        budget = find_latest_budget()
 
-        if not usable:
-            raise RuntimeError(
-                "No suitable published NHS budget found."
-            )
+        data["budgets"][year_key] = budget
 
-        latest = max(
-            usable,
-            key=lambda item: (
-                item["years"][0],
-                item["published"]
-            )
+        print(
+            "Created budget snapshot for "
+            f"{current_year}: "
+            f"{budget['financialYear']} "
+            f"£{budget['amount']:,}"
         )
-
-        start, end = latest["years"]
-
-        data["budgets"][str(current_year)] = {
-            "financialYear": (
-                f"{start}/{str(end)[-2:]}"
-            ),
-            "amount": latest["amount"],
-            "sourceUrl": latest["url"],
-            "published": latest["published"],
-            "snapshotDate": (
-                f"{current_year}-01-01"
-            )
-        }
-
-    # Prepare the next year's snapshot if its
-    # financial directions have already been published.
-    next_year = current_year + 1
-
-    future = [
-        item
-        for item in by_start.values()
-        if item["years"][0] == next_year
-    ]
-
-    if (
-        str(next_year) not in data["budgets"]
-        and future
-    ):
-        latest = max(
-            future,
-            key=lambda item: item["published"]
+    else:
+        print(
+            f"Budget snapshot for {current_year} "
+            "already exists; leaving it unchanged."
         )
-
-        start, end = latest["years"]
-
-        data["budgets"][str(next_year)] = {
-            "financialYear": (
-                f"{start}/{str(end)[-2:]}"
-            ),
-            "amount": latest["amount"],
-            "sourceUrl": latest["url"],
-            "published": latest["published"],
-            "snapshotDate": (
-                f"{next_year}-01-01"
-            )
-        }
 
     data["lastUpdated"] = str(today)
 
     DATA.write_text(
         json.dumps(
             data,
-            indent=2,
-            sort_keys=True
+            indent=2
         ) + "\n",
         encoding="utf-8"
     )
 
-    print("Budget data updated successfully.")
+    print(
+        "Budget data updated successfully."
+    )
 
 
 if __name__ == "__main__":
     main()
+```
